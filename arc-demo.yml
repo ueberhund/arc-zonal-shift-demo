@@ -1,0 +1,273 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: Used to provide a demo of Route 53 Application Recovery Controller Zonal Shift
+
+Parameters:
+  AL2AMIId: 
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    
+  ServerCodeUrl:
+    Type: String  
+    Default: https://nonprofit-demo-cloudformation-scripts.s3.amazonaws.com/resilience/server.py
+
+Resources:
+  ################################################################
+  # VPC resources
+  ################################################################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: "192.168.0.0/16"
+      EnableDnsSupport: "true"
+      EnableDnsHostnames: "true"
+      
+  IG:
+    Type: "AWS::EC2::InternetGateway"
+    
+  IGAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      InternetGatewayId: !Ref IG
+      VpcId: !Ref VPC
+  
+  IGVPCRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+   
+  IGVPCRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: "0.0.0.0/0"
+      RouteTableId: !Ref IGVPCRouteTable
+      GatewayId: !Ref IG
+  
+  Subnet1ToRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref IGVPCRouteTable
+      SubnetId: !Ref Subnet1
+  
+  Subnet2ToRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref IGVPCRouteTable
+      SubnetId: !Ref Subnet2
+  
+  Subnet3ToRouteTable:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref IGVPCRouteTable
+      SubnetId: !Ref Subnet3
+  
+  Subnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: "192.168.1.0/26"
+      AvailabilityZone: !Select [0, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: Public Subnet 1
+      VpcId: !Ref VPC
+      
+  Subnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: "192.168.2.0/26"
+      AvailabilityZone: !Select [1, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: Public Subnet 2
+      VpcId: !Ref VPC
+      
+  Subnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: "192.168.3.0/26"
+      AvailabilityZone: !Select [2, !GetAZs '' ]
+      MapPublicIpOnLaunch: true
+      Tags:
+      - Key: Name
+        Value: Public Subnet 3
+      VpcId: !Ref VPC
+      
+  Subnet4:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: "192.168.4.0/26"
+      AvailabilityZone: !Select [0, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value: Private Subnet 1
+      VpcId: !Ref VPC
+      
+  Subnet5:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: "192.168.5.0/26"
+      AvailabilityZone: !Select [1, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value: Private Subnet 2
+      VpcId: !Ref VPC
+      
+  Subnet6:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: "192.168.6.0/26"
+      AvailabilityZone: !Select [2, !GetAZs '' ]
+      MapPublicIpOnLaunch: false
+      Tags:
+      - Key: Name
+        Value: Private Subnet 3
+      VpcId: !Ref VPC
+  
+  ################################################################
+  # Security Group resources
+  ################################################################
+  PublicSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Public security group
+      SecurityGroupIngress:
+      -
+        IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: "0.0.0.0/0"
+      Tags:
+      - Key: Name
+        Value: Public Security Group
+        
+  PrivateSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: Private security group
+      SecurityGroupIngress:
+      -
+        IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !GetAtt PublicSecurityGroup.GroupId
+      Tags:
+      - Key: Name
+        Value: Private Security Group
+
+  ################################################################
+  # Load balancer resources
+  ################################################################
+  LoadBalancer:
+    Type : AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties :
+      Name : !Sub ${AWS::StackName}-LB
+      SecurityGroups :
+      - !Ref PublicSecurityGroup
+      Subnets :
+      - !Ref Subnet1
+      - !Ref Subnet2
+      - !Ref Subnet3
+      
+  ALBListener:
+    Type : AWS::ElasticLoadBalancingV2::Listener
+    Properties :
+      DefaultActions :
+      - Type: "forward"
+        TargetGroupArn : !Ref ALBTargetGroup
+      LoadBalancerArn : !Ref LoadBalancer
+      Port : "80"
+      Protocol : "HTTP"
+      
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties :
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 3
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Port : 80
+      Protocol : HTTP
+      VpcId : !Ref VPC
+      TargetGroupAttributes:
+        - Key: load_balancing.cross_zone.enabled
+          Value: false
+        - Key: deregistration_delay.timeout_seconds     #Short timeout for this demo
+          Value: 10
+
+  ################################################################
+  # AutoScaling resources
+  ################################################################
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      MaxSize: 6
+      MinSize: 3
+      DesiredCapacity: 3
+      VPCZoneIdentifier:
+        - !Ref Subnet1
+        - !Ref Subnet2
+        - !Ref Subnet3
+      LaunchConfigurationName: !Ref LaunchConfig
+      TargetGroupARNs:
+        - !Ref ALBTargetGroup
+      
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+        ImageId: !Ref AL2AMIId
+        InstanceType: t3.micro
+        IamInstanceProfile: !Ref EC2InstanceProfile
+        SecurityGroups:
+          - !Ref PublicSecurityGroup
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            yum -y update
+            sleep 30 # prevent "Error: Rpmdb changed underneath us"
+            yum install python3 python-virtualenv python-pip -y
+            python3 -m venv /home/ec2-user/venv
+            source /home/ec2-user/venv/bin/activate
+            pip install boto3
+            pip install ec2_metadata
+            wget -O server.py ${ServerCodeUrl}
+            python3 server.py -p 80 -r ${AWS::Region}
+            
+  ################################################################
+  # IAM resources
+  ################################################################
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref EC2Role
+
+################################################################
+# Outputs
+################################################################      
+Outputs:
+  WebsiteUrl:
+    Value: !GetAtt LoadBalancer.DNSName
