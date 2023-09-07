@@ -167,6 +167,9 @@ Resources:
     Type : AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties :
       Name : !Sub ${AWS::StackName}-LB
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds         #Short timeout for this demo
+          Value: 1
       SecurityGroups :
       - !Ref PublicSecurityGroup
       Subnets :
