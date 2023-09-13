@@ -239,8 +239,8 @@ Resources:
             source /home/ec2-user/venv/bin/activate
             pip install boto3
             pip install ec2_metadata
-            wget -O server.py ${ServerCodeUrl}
-            python3 server.py -p 80 -r ${AWS::Region}
+            wget -O /home/ec2-user/server.py ${ServerCodeUrl}
+            python3 /home/ec2-user/server.py -p 80 -r ${AWS::Region}
             
   ################################################################
   # IAM resources
