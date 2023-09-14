@@ -213,6 +213,7 @@ Resources:
       MaxSize: 6
       MinSize: 3
       DesiredCapacity: 3
+      HealthCheckType: ELB
       VPCZoneIdentifier:
         - !Ref Subnet1
         - !Ref Subnet2
