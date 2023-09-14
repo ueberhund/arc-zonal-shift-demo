@@ -221,6 +221,11 @@ Resources:
       LaunchConfigurationName: !Ref LaunchConfig
       TargetGroupARNs:
         - !Ref ALBTargetGroup
+      LifecycleHookSpecificationList:
+        - LifecycleHookName: CoolDown
+          LifecycleTransition: autoscaling:EC2_INSTANCE_LAUNCHING
+          HeartbeatTimeout: 180
+          DefaultResult: CONTINUE
       
   LaunchConfig:
     Type: AWS::AutoScaling::LaunchConfiguration
