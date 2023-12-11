@@ -23,10 +23,10 @@ Resources:
       EnableDnsHostnames: "true"
       
   IG:
-    Type: "AWS::EC2::InternetGateway"
+    Type: AWS::EC2::InternetGateway
     
   IGAttachment:
-    Type: "AWS::EC2::VPCGatewayAttachment"
+    Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       InternetGatewayId: !Ref IG
       VpcId: !Ref VPC
@@ -203,6 +203,10 @@ Resources:
           Value: false
         - Key: deregistration_delay.timeout_seconds     #Short timeout for this demo
           Value: 10
+        - Key: load_balancing.algorithm.type
+          Value: weighted_random
+        - Key: load_balancing.algorithm.anomaly_mitigation
+          Value: "on"
 
   ################################################################
   # AutoScaling resources
@@ -218,7 +222,9 @@ Resources:
         - !Ref Subnet1
         - !Ref Subnet2
         - !Ref Subnet3
-      LaunchConfigurationName: !Ref LaunchConfig
+      LaunchTemplate: 
+        LaunchTemplateId: !GetAtt LaunchTemplate.LaunchTemplateId
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
       TargetGroupARNs:
         - !Ref ALBTargetGroup
       LifecycleHookSpecificationList:
@@ -227,14 +233,16 @@ Resources:
           HeartbeatTimeout: 180
           DefaultResult: CONTINUE
       
-  LaunchConfig:
-    Type: AWS::AutoScaling::LaunchConfiguration
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Properties:
+      LaunchTemplateData:
         ImageId: !Ref AL2AMIId
         InstanceType: t3.micro
-        IamInstanceProfile: !Ref EC2InstanceProfile
-        SecurityGroups:
-          - !Ref PublicSecurityGroup
+        IamInstanceProfile: 
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - !GetAtt PublicSecurityGroup.GroupId
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
@@ -273,6 +281,565 @@ Resources:
       Path: /
       Roles:
         - !Ref EC2Role
+
+  ################################################################
+  # CloudWatch Alarms for AZ impact
+  ################################################################
+  #AZ1 Alarms
+  AZ1AvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet1.AvailabilityZone}-availability
+      AlarmDescription: Alarm if availabilitiy drops below 99.9% for 3 consecutive periods
+      Metrics:
+        - Expression: (m1-m2)/m1
+          Id: ad1
+          Label: !Sub ${Subnet1.AvailabilityZone} availability
+          ReturnData: true
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: RequestCount
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet1.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: HTTPCode_ELB_5XX_Count
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet1.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+      EvaluationPeriods: 3
+      Threshold: 0.999  #Looking for availability greater than 99.9%
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AZ1Availability3Of5Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet1.AvailabilityZone}-3of5-availability
+      AlarmDescription: Alarm if availabilitiy drops below 99.9% for 3 of 5 consecutive periods
+      Metrics:
+        - Expression: (m1-m2)/m1
+          Id: ad1
+          Label: !Sub ${Subnet1.AvailabilityZone} availability
+          ReturnData: true
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: RequestCount
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet1.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: HTTPCode_ELB_5XX_Count
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet1.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 0.999
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AZ1LatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet1.AvailabilityZone}-latency
+      AlarmDescription: Alarm if 3 instances of latency > 100 ms
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: AvailabilityZone
+          Value: !GetAtt Subnet1.AvailabilityZone
+      ExtendedStatistic: p90
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0.1    # >= 100ms
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  AZ1Latency3Of5Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet1.AvailabilityZone}-3of5-latency
+      AlarmDescription: Alarm if 3 of 5 instances of latency > 100 ms
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: AvailabilityZone
+          Value: !GetAtt Subnet1.AvailabilityZone
+      ExtendedStatistic: p90
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 0.1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  #AZ2 Alarms
+  AZ2AvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet2.AvailabilityZone}-availability
+      AlarmDescription: Alarm if availabilitiy drops below 99.9% for 3 consecutive periods
+      Metrics:
+        - Expression: (m1-m2)/m1
+          Id: ad1
+          Label: !Sub ${Subnet2.AvailabilityZone} availability
+          ReturnData: true
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: RequestCount
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet2.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: HTTPCode_ELB_5XX_Count
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet2.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+      EvaluationPeriods: 3
+      Threshold: 0.999  #Looking for availability greater than 99.9%
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AZ2Availability3Of5Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet2.AvailabilityZone}-3of5-availability
+      AlarmDescription: Alarm if availabilitiy drops below 99.9% for 3 of 5 consecutive periods
+      Metrics:
+        - Expression: (m1-m2)/m1
+          Id: ad1
+          Label: !Sub ${Subnet2.AvailabilityZone} availability
+          ReturnData: true
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: RequestCount
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet2.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: HTTPCode_ELB_5XX_Count
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet2.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 0.999
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AZ2LatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet2.AvailabilityZone}-latency
+      AlarmDescription: Alarm if 3 instances of latency > 100 ms
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: AvailabilityZone
+          Value: !GetAtt Subnet2.AvailabilityZone
+      ExtendedStatistic: p90
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0.1    # >= 100ms
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  AZ2Latency3Of5Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet2.AvailabilityZone}-3of5-latency
+      AlarmDescription: Alarm if 3 of 5 instances of latency > 100 ms
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: AvailabilityZone
+          Value: !GetAtt Subnet2.AvailabilityZone
+      ExtendedStatistic: p90
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 0.1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  #AZ3 Alarms
+  AZ3AvailabilityAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet3.AvailabilityZone}-availability
+      AlarmDescription: Alarm if availabilitiy drops below 99.9% for 3 consecutive periods
+      Metrics:
+        - Expression: (m1-m2)/m1
+          Id: ad1
+          Label: !Sub ${Subnet3.AvailabilityZone} availability
+          ReturnData: true
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: RequestCount
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet3.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: HTTPCode_ELB_5XX_Count
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet3.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+      EvaluationPeriods: 3
+      Threshold: 0.999  #Looking for availability greater than 99.9%
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AZ3Availability3Of5Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet3.AvailabilityZone}-3of5-availability
+      AlarmDescription: Alarm if availabilitiy drops below 99.9% for 3 of 5 consecutive periods
+      Metrics:
+        - Expression: (m1-m2)/m1
+          Id: ad1
+          Label: !Sub ${Subnet3.AvailabilityZone} availability
+          ReturnData: true
+        - Id: m1
+          MetricStat:
+            Metric:
+              MetricName: RequestCount
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet3.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+        - Id: m2
+          MetricStat:
+            Metric:
+              MetricName: HTTPCode_ELB_5XX_Count
+              Namespace: AWS/ApplicationELB
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+                - Name: AvailabilityZone
+                  Value: !GetAtt Subnet3.AvailabilityZone
+            Stat: Sum
+            Period: 60
+          ReturnData: false
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 0.999
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  AZ3LatencyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet3.AvailabilityZone}-latency
+      AlarmDescription: Alarm if 3 instances of latency > 100 ms
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: AvailabilityZone
+          Value: !GetAtt Subnet3.AvailabilityZone
+      ExtendedStatistic: p90
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 0.1    # >= 100ms
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  AZ3Latency3Of5Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-${Subnet3.AvailabilityZone}-3of5-latency
+      AlarmDescription: Alarm if 3 of 5 instances of latency > 100 ms
+      Namespace: AWS/ApplicationELB
+      MetricName: TargetResponseTime
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+        - Name: AvailabilityZone
+          Value: !GetAtt Subnet3.AvailabilityZone
+      ExtendedStatistic: p90
+      Period: 60
+      EvaluationPeriods: 5
+      DatapointsToAlarm: 3
+      Threshold: 0.1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  #Composite Alarms
+  AZ1AvailabilityCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet1.AvailabilityZone}-availability
+      AlarmRule: !Sub (ALARM(${AZ1AvailabilityAlarm}) OR ALARM(${AZ1Availability3Of5Alarm}))
+
+  AZ1LatencyCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet1.AvailabilityZone}-latency
+      AlarmRule: !Sub (ALARM(${AZ1LatencyAlarm}) OR ALARM(${AZ1Latency3Of5Alarm}))
+
+  AZ2AvailabilityCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet2.AvailabilityZone}-availability
+      AlarmRule: !Sub (ALARM(${AZ2AvailabilityAlarm}) OR ALARM(${AZ2Availability3Of5Alarm}))
+
+  AZ2LatencyCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet2.AvailabilityZone}-latency
+      AlarmRule: !Sub (ALARM(${AZ2LatencyAlarm}) OR ALARM(${AZ2Latency3Of5Alarm}))
+  
+  AZ3AvailabilityCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet3.AvailabilityZone}-availability
+      AlarmRule: !Sub (ALARM(${AZ3AvailabilityAlarm}) OR ALARM(${AZ3Availability3Of5Alarm}))
+
+  AZ3LatencyCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet3.AvailabilityZone}-latency
+      AlarmRule: !Sub (ALARM(${AZ3LatencyAlarm}) OR ALARM(${AZ3Latency3Of5Alarm}))
+  
+  #AZ impact alarm
+  #For each of the AZ impact composite alarms, you should also add a new alarm to use 
+  # INSIGHT_RULE_METRIC to make sure the impact is coming from more than 1 instance
+  #Ex: INSIGHT_RULE_METRIC("5XX-errors-use1-az1", "UniqueContributors") >= 2
+  #See https://docs.aws.amazon.com/whitepapers/latest/advanced-multi-az-resilience-patterns/failure-detection-with-cloudwatch-composite-alarms.html
+  AZ1ImpactCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet1.AvailabilityZone}-impact
+      AlarmRule: !Sub (ALARM(${AZ1AvailabilityCompositeAlarm}) OR ALARM(${AZ1LatencyCompositeAlarm}))
+                      AND NOT 
+                      (ALARM(${AZ2AvailabilityCompositeAlarm}) OR ALARM(${AZ2LatencyCompositeAlarm})
+                      OR ALARM(${AZ3AvailabilityCompositeAlarm}) OR ALARM(${AZ3LatencyCompositeAlarm}))
+
+  AZ2ImpactCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet2.AvailabilityZone}-impact
+      AlarmRule: !Sub (ALARM(${AZ2AvailabilityCompositeAlarm}) OR ALARM(${AZ2LatencyCompositeAlarm}))
+                      AND NOT 
+                      (ALARM(${AZ1AvailabilityCompositeAlarm}) OR ALARM(${AZ1LatencyCompositeAlarm})
+                      OR ALARM(${AZ3AvailabilityCompositeAlarm}) OR ALARM(${AZ3LatencyCompositeAlarm}))
+
+  AZ3ImpactCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${Subnet3.AvailabilityZone}-impact
+      AlarmRule: !Sub (ALARM(${AZ3AvailabilityCompositeAlarm}) OR ALARM(${AZ3LatencyCompositeAlarm}))
+                      AND NOT 
+                      (ALARM(${AZ1AvailabilityCompositeAlarm}) OR ALARM(${AZ1LatencyCompositeAlarm})
+                      OR ALARM(${AZ2AvailabilityCompositeAlarm}) OR ALARM(${AZ2LatencyCompositeAlarm}))
+
+  AZImpactCompositeAlarm:
+    Type: AWS::CloudWatch::CompositeAlarm
+    Properties:
+      AlarmName: !Sub ${AWS::StackName}-az-impact
+      AlarmRule: !Sub (ALARM(${AZ1ImpactCompositeAlarm}) OR ALARM(${AZ2ImpactCompositeAlarm}) OR ALARM(${AZ3ImpactCompositeAlarm}))
+
+  ################################################################
+  # ARC Zonal Shift resources
+  ################################################################
+  ZonalShift:
+    Type: AWS::ARCZonalShift::ZonalAutoshiftConfiguration
+    Properties:
+      PracticeRunConfiguration:
+        OutcomeAlarms:  
+          - AlarmIdentifier: !GetAtt   AZImpactCompositeAlarm.Arn
+            Type: CLOUDWATCH
+      ResourceIdentifier: !Ref LoadBalancer
+      ZonalAutoshiftStatus: ENABLED
+
+  ################################################################
+  # Canary resources
+  ################################################################
+  CanaryS3Bucket:
+    Type: AWS::S3::Bucket
+
+  CanaryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: CanaryPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${CanaryS3Bucket}/*
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${CanaryS3Bucket}
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cwsyn-${AWS::StackName}-canary*
+              - Effect: Allow
+                Action:
+                  - s3:ListAllMyBuckets
+                  - xray:PutTraceSegments
+                Resource: "*"  
+              - Effect: Allow
+                Action:
+                 - cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: "CloudWatchSynthetics"
+
+  Canary:
+    Type: AWS::Synthetics::Canary
+    Properties:
+      ArtifactS3Location: !Sub s3://${CanaryS3Bucket}/${AWS::StackName}-canary
+      ExecutionRoleArn: !GetAtt CanaryRole.Arn
+      Name: !Sub ${AWS::StackName}-canary
+      RuntimeVersion: syn-python-selenium-2.0
+      Schedule:
+        Expression: "rate(1 minute)"
+      RunConfig:
+        TimeoutInSeconds: 60
+      StartCanaryAfterCreation: true
+      SuccessRetentionPeriod: 1
+      FailureRetentionPeriod: 1
+      Code:
+        Script: !Sub |
+          from selenium.webdriver.common.by import By
+          from aws_synthetics.selenium import synthetics_webdriver as syn_webdriver
+          from aws_synthetics.common import synthetics_logger as logger
+
+          def main():
+
+              url = "http://${LoadBalancer.DNSName}"
+
+              # Set screenshot option
+              takeScreenshot = True
+
+              browser = syn_webdriver.Chrome()
+              browser.get(url)
+
+              if takeScreenshot:
+                  browser.save_screenshot("loaded.png")
+
+              response_code = syn_webdriver.get_http_response(url)
+              if not response_code or response_code < 200 or response_code > 299:
+                  raise Exception("Failed to load page!")
+              logger.info("Canary successfully executed.")
+
+          def handler(event, context):
+              # user defined log statements using synthetics_logger
+              logger.info("Selenium Python heartbeat canary.")
+              return main()
+        Handler: index.handler
+
 
 ################################################################
 # Outputs
